@@ -1,0 +1,287 @@
+{
+  "log": {
+    "level": "warn",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "adguard-dns",
+        "address": "https://dns.adguard-dns.com/dns-query",
+        "address_resolver": "local-dns",
+        "detour": "proxy-out"
+      },
+      {
+        "tag": "adguard-family",
+        "address": "https://family.adguard-dns.com/dns-query",
+        "address_resolver": "local-dns",
+        "detour": "proxy-out"
+      },
+      {
+        "tag": "cloudflare-dns",
+        "address": "https://1.1.1.1/dns-query",
+        "address_resolver": "local-dns",
+        "detour": "proxy-out"
+      },
+      {
+        "tag": "local-dns",
+        "address": "223.5.5.5",
+        "detour": "direct-out"
+      },
+      {
+        "tag": "block-dns",
+        "address": "rcode://success"
+      }
+    ],
+    "rules": [
+      {
+        "geosite": ["category-ads-all", "category-ads-ru"],
+        "server": "block-dns",
+        "disable_cache": true
+      },
+      {
+        "domain_suffix": [".ru", ".рф", ".su"],
+        "server": "local-dns"
+      },
+      {
+        "geosite": ["geolocation-!cn", "google", "youtube", "telegram", "tiktok", "twitter", "facebook", "instagram", "netflix", "spotify", "discord", "twitch"],
+        "server": "adguard-dns"
+      },
+      {
+        "geosite": ["category-porn"],
+        "server": "adguard-family"
+      },
+      {
+        "outbound": "any",
+        "server": "adguard-dns"
+      }
+    ],
+    "final": "adguard-dns",
+    "independent_cache": true,
+    "reverse_mapping": true
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "interface_name": "sing-box",
+      "inet4_address": "172.19.0.1/30",
+      "inet6_address": "fdfe:dcba:9876::1/126",
+      "auto_route": true,
+      "strict_route": true,
+      "stack": "gvisor",
+      "sniff": true,
+      "sniff_override_destination": true
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "selector",
+      "tag": "proxy-out",
+      "outbounds": [
+        "auto-select",
+        "warp-out",
+        "tor-out",
+        "direct-out"
+      ],
+      "default": "auto-select"
+    },
+    {
+      "type": "urltest",
+      "tag": "auto-select",
+      "outbounds": [],
+      "url": "https://www.google.com/generate_204",
+      "interval": "1m",
+      "tolerance": 50
+    },
+    {
+      "type": "selector",
+      "tag": "messengers",
+      "outbounds": [
+        "auto-select",
+        "warp-out"
+      ],
+      "default": "auto-select"
+    },
+    {
+      "type": "wireguard",
+      "tag": "warp-out",
+      "server": "engage.cloudflareclient.com",
+      "server_port": 2408,
+      "local_address": [
+        "172.16.0.2/32",
+        "2606:4700:110:8f81:d551:a0:532e:b2ba/128"
+      ],
+      "private_key": "680rOV1e-528C1qUx-W18x6j3Z",
+      "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+      "reserved": [0, 0, 0],
+      "mtu": 1280,
+      "workers": 2
+    },
+    {
+      "type": "socks",
+      "tag": "tor-out",
+      "server": "127.0.0.1",
+      "server_port": 9050
+    },
+    {
+      "type": "direct",
+      "tag": "direct-out"
+    },
+    {
+      "type": "block",
+      "tag": "block-out"
+    }
+  ],
+  "route": {
+    "geoip": {
+      "download_url": "https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db",
+      "download_detour": "direct-out"
+    },
+    "geosite": {
+      "download_url": "https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db",
+      "download_detour": "direct-out"
+    },
+    "rules": [
+      {
+        "protocol": "dns",
+        "outbound": "dns-out"
+      },
+      {
+        "geosite": ["category-ads-all", "category-ads-ru", "google-ads", "youtube-ads"],
+        "outbound": "block-out"
+      },
+      {
+        "domain": [
+          "dns.adguard-dns.com",
+          "family.adguard-dns.com"
+        ],
+        "outbound": "proxy-out"
+      },
+      {
+        "geosite": [
+          "yandex",
+          "category-ru",
+          "category-gov-ru",
+          "sberbank",
+          "tinkoff",
+          "vtb",
+          "alfabank",
+          "gosuslugi",
+          "avito",
+          "ozon",
+          "wildberries",
+          "yoomoney",
+          "qiwi",
+          "megafon",
+          "beeline",
+          "mts",
+          "tele2",
+          "rostelecom",
+          "domru",
+          "2gis",
+          "kontur",
+          "sbis",
+          "1c"
+        ],
+        "geoip": ["ru", "private"],
+        "outbound": "direct-out"
+      },
+      {
+        "domain_suffix": [
+          ".ru",
+          ".рф",
+          ".su",
+          ".yandex.net",
+          ".yandex.ru",
+          ".vk.com",
+          ".vk.ru",
+          ".mail.ru",
+          ".ok.ru"
+        ],
+        "outbound": "direct-out"
+      },
+      {
+        "domain_keyword": [
+          "yandex",
+          "sber",
+          "tinkoff",
+          "gosuslugi",
+          "avito",
+          "ozon",
+          "wildberries",
+          "qiwi",
+          "yoomoney"
+        ],
+        "outbound": "direct-out"
+      },
+      {
+        "geosite": [
+          "wechat",
+          "whatsapp",
+          "bip",
+          "telegram",
+          "signal",
+          "line",
+          "kakao"
+        ],
+        "outbound": "messengers"
+      },
+      {
+        "domain_keyword": [
+          "whatsapp",
+          "wechat",
+          "bip",
+          "signal",
+          "line.me",
+          "kakao"
+        ],
+        "outbound": "messengers"
+      },
+      {
+        "geosite": [
+          "google",
+          "youtube",
+          "tiktok",
+          "twitter",
+          "facebook",
+          "instagram",
+          "netflix",
+          "spotify",
+          "discord",
+          "twitch",
+          "telegram",
+          "openai",
+          "github",
+          "gitlab",
+          "stackoverflow",
+          "medium",
+          "reddit",
+          "linkedin"
+        ],
+        "outbound": "proxy-out"
+      },
+      {
+        "geoip": ["cn", "kp", "ir"],
+        "outbound": "proxy-out"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "direct-out"
+      }
+    ],
+    "final": "proxy-out",
+    "auto_detect_interface": true
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "path": "cache.db"
+    },
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090",
+      "secret": "",
+      "store_selected": true
+    }
+  }
+}

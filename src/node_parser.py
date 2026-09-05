@@ -1,184 +1,232 @@
-from models import Node, Source
-from node_parser import (
-    NodeParserError,
-    ParsedSource,
-    collect_parsed_nodes,
-    parse_healthy_source,
-)
+from __future__ import annotations
+
+import base64
+import binascii
+from dataclasses import dataclass
+from urllib.parse import parse_qs, unquote, urlparse
+
+from credentials import CredentialsError, NodeCredentials
+from models import Node
 from source_health import SourceHealth
 
 
-def make_source() -> Source:
-    return Source(
-        url="https://example.com/source.txt",
-        name="Тестовый источник",
-    )
+class NodeParserError(Exception):
+    """Ошибка обработки VPN-узлов."""
 
 
-def make_health(
-    *,
-    available: bool = True,
-) -> SourceHealth:
-    return SourceHealth(
-        source=make_source(),
-        available=available,
-        content_size=100 if available else 0,
-        error=None if available else "unavailable",
-    )
+@dataclass(frozen=True)
+class ParsedSource:
+    source_url: str
+    nodes: list[Node]
 
 
-def test_parse_healthy_source() -> None:
-    health = make_health()
-
-    content = (
-        "trojan://test-password@example.com:443"
-        "?sni=example.com#Germany-Berlin"
-    )
-
-    result = parse_healthy_source(
-        health,
-        content,
-    )
-
-    assert result.source_url == (
-        "https://example.com/source.txt"
-    )
-
-    assert len(result.nodes) == 1
-
-    node = result.nodes[0]
-
-    assert node.protocol == "trojan"
-    assert node.address == "example.com"
-    assert node.port == 443
-
-    assert node.credentials is not None
-    assert node.credentials.password == "test-password"
-
-    assert node.parameters["sni"] == "example.com"
-
-    # Пароль не должен попадать в обычные параметры.
-    assert "password" not in node.parameters
+ALLOWED_PROTOCOLS = {
+    "trojan",
+    "hysteria2",
+    "hy2",
+}
 
 
-def test_parse_hysteria2_credentials() -> None:
-    health = make_health()
+def _decode_base64(value: str) -> str | None:
+    value = "".join(value.strip().split())
 
-    content = (
-        "hysteria2://hy2-password@example.com:443"
-        "?sni=example.com#Germany-Berlin"
-    )
+    if not value:
+        return None
 
-    result = parse_healthy_source(
-        health,
-        content,
-    )
-
-    assert len(result.nodes) == 1
-
-    node = result.nodes[0]
-
-    assert node.protocol == "hysteria2"
-    assert node.credentials is not None
-    assert node.credentials.password == "hy2-password"
-
-
-def test_parse_hy2_alias() -> None:
-    health = make_health()
-
-    content = (
-        "hy2://hy2-password@example.com:443"
-        "?sni=example.com"
-    )
-
-    result = parse_healthy_source(
-        health,
-        content,
-    )
-
-    assert len(result.nodes) == 1
-    assert result.nodes[0].protocol == "hysteria2"
-
-
-def test_missing_credentials_are_not_accepted_as_credentials() -> None:
-    health = make_health()
-
-    content = (
-        "trojan://example.com:443"
-        "?sni=example.com"
-    )
-
-    result = parse_healthy_source(
-        health,
-        content,
-    )
-
-    assert len(result.nodes) == 1
-    assert result.nodes[0].credentials is None
-
-
-def test_unavailable_source_is_rejected() -> None:
-    health = make_health(available=False)
+    value += "=" * (-len(value) % 4)
 
     try:
-        parse_healthy_source(
-            health,
-            "trojan://password@example.com:443",
+        decoded = base64.b64decode(
+            value,
+            validate=True,
         )
-    except NodeParserError:
-        pass
-    else:
-        raise AssertionError(
-            "Ожидалась ошибка для недоступного источника."
+    except (ValueError, binascii.Error):
+        return None
+
+    try:
+        return decoded.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _credentials_from_uri(
+    parsed,
+) -> NodeCredentials | None:
+    if parsed.username is None:
+        return None
+
+    password = unquote(
+        parsed.password or "",
+    )
+
+    if not password:
+        return None
+
+    try:
+        return NodeCredentials(
+            password=password,
+        )
+    except CredentialsError:
+        return None
+
+
+def _parse_uri(uri: str) -> Node | None:
+    parsed = urlparse(uri)
+
+    protocol = parsed.scheme.lower()
+
+    if protocol not in ALLOWED_PROTOCOLS:
+        return None
+
+    if not parsed.hostname:
+        return None
+
+    if parsed.port is None:
+        return None
+
+    if not 1 <= parsed.port <= 65535:
+        return None
+
+    query = parse_qs(
+        parsed.query,
+        keep_blank_values=False,
+    )
+
+    parameters: dict[str, str] = {}
+
+    for key in (
+        "sni",
+        "security",
+        "type",
+        "host",
+        "path",
+    ):
+        values = query.get(key)
+
+        if not values:
+            continue
+
+        value = unquote(
+            values[0],
+        ).strip()
+
+        if value:
+            parameters[key] = value
+
+    normalized_protocol = (
+        "hysteria2"
+        if protocol == "hy2"
+        else protocol
+    )
+
+    name = (
+        unquote(
+            parsed.fragment,
+        ).strip()
+        if parsed.fragment
+        else None
+    )
+
+    return Node(
+        protocol=normalized_protocol,
+        address=parsed.hostname,
+        port=parsed.port,
+        name=name,
+        credentials=_credentials_from_uri(
+            parsed,
+        ),
+        parameters=parameters,
+    )
+
+
+def _candidate_lines(
+    content: str,
+) -> list[str]:
+    lines: list[str] = []
+
+    for line in content.splitlines():
+        candidate = line.strip()
+
+        if not candidate:
+            continue
+
+        if candidate.startswith("#"):
+            continue
+
+        lines.append(candidate)
+
+    has_uri = any(
+        line.lower().startswith(
+            (
+                "trojan://",
+                "hysteria2://",
+                "hy2://",
+            )
+        )
+        for line in lines
+    )
+
+    if not has_uri:
+        decoded = _decode_base64(
+            content,
         )
 
+        if decoded:
+            for line in decoded.splitlines():
+                candidate = line.strip()
 
-def test_parse_empty_source() -> None:
-    health = make_health()
+                if candidate and not candidate.startswith("#"):
+                    lines.append(candidate)
 
-    result = parse_healthy_source(
-        health,
-        "",
+    return lines
+
+
+def parse_content(
+    content: str,
+) -> list[Node]:
+    if not isinstance(content, str):
+        raise NodeParserError(
+            "Содержимое источника должно быть строкой."
+        )
+
+    nodes: list[Node] = []
+
+    for line in _candidate_lines(content):
+        try:
+            node = _parse_uri(line)
+        except ValueError:
+            continue
+
+        if node is not None:
+            nodes.append(node)
+
+    return nodes
+
+
+def parse_healthy_source(
+    health: SourceHealth,
+    content: str,
+) -> ParsedSource:
+    if not health.available:
+        raise NodeParserError(
+            "Нельзя разбирать недоступный источник: "
+            f"{health.source.url}"
+        )
+
+    return ParsedSource(
+        source_url=health.source.url,
+        nodes=parse_content(content),
     )
 
-    assert result.nodes == []
 
+def collect_parsed_nodes(
+    parsed_sources: list[ParsedSource],
+) -> list[Node]:
+    nodes: list[Node] = []
 
-def test_collect_parsed_nodes() -> None:
-    node_one = Node(
-        protocol="trojan",
-        address="one.example",
-        port=443,
-    )
+    for parsed_source in parsed_sources:
+        nodes.extend(
+            parsed_source.nodes,
+        )
 
-    node_two = Node(
-        protocol="hysteria2",
-        address="two.example",
-        port=443,
-    )
-
-    parsed_sources = [
-        ParsedSource(
-            source_url="https://example.com/one.txt",
-            nodes=[node_one],
-        ),
-        ParsedSource(
-            source_url="https://example.com/two.txt",
-            nodes=[node_two],
-        ),
-    ]
-
-    result = collect_parsed_nodes(
-        parsed_sources,
-    )
-
-    assert result == [
-        node_one,
-        node_two,
-    ]
-
-
-def test_collect_parsed_nodes_with_empty_sources() -> None:
-    result = collect_parsed_nodes([])
-
-    assert result == []
+    return nodes

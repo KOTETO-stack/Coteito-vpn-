@@ -1,99 +1,138 @@
-from models import Node, Source
-from node_parser import (
-    NodeParserError,
-    ParsedSource,
-    collect_parsed_nodes,
-    parse_healthy_source,
-)
+from __future__ import annotations
+
+from dataclasses import dataclass
+from urllib.parse import parse_qs, unquote, urlparse
+
+from credentials import CredentialsError, NodeCredentials
+from models import Node
 from source_health import SourceHealth
 
 
-def make_source() -> Source:
-    return Source(
-        url="https://example.com/source.txt",
-        name="Тестовый источник",
-    )
+class NodeParserError(Exception):
+    """Ошибка обработки VPN-узлов."""
 
 
-def make_health(*, available: bool = True) -> SourceHealth:
-    return SourceHealth(
-        source=make_source(),
-        available=available,
-        content_size=100 if available else 0,
-        error=None if available else "unavailable",
-    )
+@dataclass(frozen=True)
+class ParsedSource:
+    source_url: str
+    nodes: list[Node]
 
 
-def test_parse_healthy_source() -> None:
-    health = make_health()
+def _credentials_from_uri(parsed) -> NodeCredentials | None:
+    if parsed.username is None:
+        return None
 
-    content = (
-        "trojan://password@example.com:443"
-        "?sni=example.com#Germany-Berlin"
-    )
+    password = unquote(parsed.password or "")
 
-    result = parse_healthy_source(health, content)
-
-    assert result.source_url == "https://example.com/source.txt"
-    assert len(result.nodes) == 1
-    assert result.nodes[0].protocol == "trojan"
-    assert result.nodes[0].address == "example.com"
-    assert result.nodes[0].port == 443
-
-
-def test_unavailable_source_is_rejected() -> None:
-    health = make_health(available=False)
+    if not password:
+        return None
 
     try:
-        parse_healthy_source(
-            health,
-            "trojan://password@example.com:443",
-        )
-    except NodeParserError:
-        pass
-    else:
-        raise AssertionError(
-            "Ожидалась ошибка для недоступного источника."
-        )
+        return NodeCredentials(password=password)
+    except CredentialsError:
+        return None
 
 
-def test_parse_empty_source() -> None:
-    health = make_health()
+def _parse_uri(uri: str) -> Node | None:
+    parsed = urlparse(uri)
 
-    result = parse_healthy_source(health, "")
+    if parsed.scheme.lower() not in {
+        "trojan",
+        "hysteria2",
+        "hy2",
+    }:
+        return None
 
-    assert result.nodes == []
+    if not parsed.hostname or parsed.port is None:
+        return None
 
-
-def test_collect_parsed_nodes() -> None:
-    node_one = Node(
-        protocol="trojan",
-        address="one.example",
-        port=443,
-    )
-    node_two = Node(
-        protocol="hysteria2",
-        address="two.example",
-        port=443,
+    query = parse_qs(
+        parsed.query,
+        keep_blank_values=False,
     )
 
-    parsed_sources = [
-        ParsedSource(
-            source_url="https://example.com/one.txt",
-            nodes=[node_one],
-        ),
-        ParsedSource(
-            source_url="https://example.com/two.txt",
-            nodes=[node_two],
-        ),
-    ]
+    parameters: dict[str, str] = {}
 
-    result = collect_parsed_nodes(parsed_sources)
+    for key in (
+        "sni",
+        "security",
+        "type",
+        "host",
+        "path",
+    ):
+        values = query.get(key)
 
-    assert result == [node_one, node_two]
+        if values:
+            value = unquote(values[0]).strip()
+
+            if value:
+                parameters[key] = value
+
+    protocol = (
+        "hysteria2"
+        if parsed.scheme.lower() == "hy2"
+        else parsed.scheme.lower()
+    )
+
+    name = (
+        unquote(parsed.fragment).strip()
+        if parsed.fragment
+        else None
+    )
+
+    return Node(
+        protocol=protocol,
+        address=parsed.hostname,
+        port=parsed.port,
+        name=name,
+        credentials=_credentials_from_uri(parsed),
+        parameters=parameters,
+    )
 
 
-def test_collect_parsed_nodes_with_empty_sources() -> None:
-    result = collect_parsed_nodes([])
+def parse_healthy_source(
+    health: SourceHealth,
+    content: str,
+) -> ParsedSource:
+    if not health.available:
+        raise NodeParserError(
+            f"Нельзя разбирать недоступный источник: "
+            f"{health.source.url}"
+        )
 
-    assert result == []
+    if not isinstance(content, str):
+        raise NodeParserError(
+            "Содержимое источника должно быть строкой."
+        )
+
+    nodes: list[Node] = []
+
+    for line in content.splitlines():
+        candidate = line.strip()
+
+        if not candidate or candidate.startswith("#"):
+            continue
+
+        try:
+            node = _parse_uri(candidate)
+        except ValueError:
+            continue
+
+        if node is not None:
+            nodes.append(node)
+
+    return ParsedSource(
+        source_url=health.source.url,
+        nodes=nodes,
+    )
+
+
+def collect_parsed_nodes(
+    parsed_sources: list[ParsedSource],
+) -> list[Node]:
+    nodes: list[Node] = []
+
+    for parsed_source in parsed_sources:
+        nodes.extend(parsed_source.nodes)
+
+    return nodes

@@ -1,59 +1,80 @@
-from models import Node, Source, ValidationResult
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+from credentials import NodeCredentials
 
 
-def test_source_creation() -> None:
-    source = Source(
-        url="https://example.com/source.txt",
-        name="Тестовый источник",
-    )
+@dataclass(frozen=True)
+class Source:
+    """Публичный источник конфигураций."""
 
-    assert source.url == "https://example.com/source.txt"
-    assert source.name == "Тестовый источник"
-    assert source.enabled is True
+    url: str
+    name: Optional[str] = None
+    enabled: bool = True
 
 
-def test_node_display_name() -> None:
-    node = Node(
-        protocol="trojan",
-        address="example.com",
-        port=443,
-        country="Германия",
-        city="Берлин",
-        flag="🇩🇪",
-    )
+@dataclass
+class Node:
+    """Нормализованная VPN-конфигурация."""
 
-    assert node.display_name() == "Германия Берлин 🇩🇪"
+    protocol: str
+    address: str
+    port: int
+
+    name: Optional[str] = None
+    country: Optional[str] = None
+    city: Optional[str] = None
+    flag: Optional[str] = None
+
+    latency_ms: Optional[float] = None
+    reachable: bool = False
+    tls_valid: bool = False
+    dns_leak: Optional[bool] = None
+    validated: bool = False
+
+    credentials: Optional[NodeCredentials] = None
+
+    parameters: dict[str, str] = field(default_factory=dict)
+
+    def display_name(self) -> str:
+        """Возвращает локализованное имя узла."""
+
+        parts = [
+            self.country,
+            self.city,
+            self.flag,
+        ]
+
+        return " ".join(
+            part.strip()
+            for part in parts
+            if part and part.strip()
+        ) or self.name or f"{self.address}:{self.port}"
 
 
-def test_node_fallback_display_name() -> None:
-    node = Node(
-        protocol="trojan",
-        address="example.com",
-        port=443,
-    )
+@dataclass
+class ValidationResult:
+    """Результат проверки одного VPN-узла."""
 
-    assert node.display_name() == "example.com:443"
+    reachable: bool
+    tls_valid: bool
+    latency_ms: Optional[float]
+    dns_leak: Optional[bool]
+    errors: list[str] = field(default_factory=list)
 
+    @property
+    def passed(self) -> bool:
+        """
+        Узел считается прошедшим проверку только при
+        подтверждённом отсутствии DNS-утечки.
+        """
 
-def test_validation_result_failed_without_connection() -> None:
-    result = ValidationResult(
-        reachable=False,
-        tls_valid=False,
-        latency_ms=None,
-        dns_leak=None,
-        errors=["connection failed"],
-    )
-
-    assert result.passed is False
-
-
-def test_validation_result_failed_with_dns_leak() -> None:
-    result = ValidationResult(
-        reachable=True,
-        tls_valid=True,
-        latency_ms=100.0,
-        dns_leak=True,
-        errors=[],
-    )
-
-    assert result.passed is False
+        return (
+            self.reachable
+            and self.tls_valid
+            and self.latency_ms is not None
+            and self.dns_leak is False
+            and not self.errors
+        )

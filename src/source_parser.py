@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 from urllib.parse import parse_qs, unquote, urlparse
 
 from models import Node
@@ -14,25 +15,16 @@ class SourceParserError(Exception):
 
 
 def _decode_base64(value: str) -> str | None:
-    """Пытается декодировать Base64-текст."""
-
     value = value.strip()
-
     if not value:
         return None
 
-    # Убираем возможные пробелы и переносы строк.
     value = "".join(value.split())
-
-    # Добавляем padding.
     value += "=" * (-len(value) % 4)
 
     try:
-        decoded = base64.b64decode(
-            value,
-            validate=True,
-        )
-    except (ValueError, base64.binascii.Error):
+        decoded = base64.b64decode(value, validate=True)
+    except (ValueError, binascii.Error):
         return None
 
     try:
@@ -42,15 +34,11 @@ def _decode_base64(value: str) -> str | None:
 
 
 def _parse_uri(uri: str) -> Node | None:
-    """Преобразует одну URI-конфигурацию в Node."""
-
     uri = uri.strip()
-
     if not uri:
         return None
 
     parsed = urlparse(uri)
-
     protocol = parsed.scheme.lower()
 
     if protocol not in ALLOWED_PROTOCOLS:
@@ -72,17 +60,22 @@ def _parse_uri(uri: str) -> Node | None:
 
     parameters: dict[str, str] = {}
 
-    for key, values in query.items():
+    for key in ("sni", "security", "type", "host", "path"):
+        values = query.get(key)
+
         if not values:
             continue
 
-        # Сохраняем только первое значение.
-        parameters[key] = unquote(values[0])
+        value = unquote(values[0]).strip()
 
-    # Не сохраняем секреты в дополнительные поля.
-    # Они могут понадобиться генератору конфигурации позже,
-    # но не должны попадать в диагностические логи.
-    name = unquote(parsed.fragment) if parsed.fragment else None
+        if value:
+            parameters[key] = value
+
+    name = (
+        unquote(parsed.fragment).strip()
+        if parsed.fragment
+        else None
+    )
 
     normalized_protocol = (
         "hysteria2"
@@ -100,12 +93,6 @@ def _parse_uri(uri: str) -> Node | None:
 
 
 def _candidate_lines(content: str) -> list[str]:
-    """
-    Возвращает возможные строки конфигураций.
-
-    Поддерживает обычный текст и Base64-содержащие источники.
-    """
-
     lines: list[str] = []
 
     for line in content.splitlines():
@@ -119,11 +106,13 @@ def _candidate_lines(content: str) -> list[str]:
 
         lines.append(line)
 
-    # Если в источнике не обнаружено URI,
-    # пробуем рассматривать весь текст как Base64.
     if not any(
         line.lower().startswith(
-            ("trojan://", "hysteria2://", "hy2://")
+            (
+                "trojan://",
+                "hysteria2://",
+                "hy2://",
+            )
         )
         for line in lines
     ):
@@ -140,8 +129,6 @@ def _candidate_lines(content: str) -> list[str]:
 
 
 def parse_source(content: str) -> list[Node]:
-    """Разбирает содержимое одного источника."""
-
     if not isinstance(content, str):
         raise SourceParserError(
             "Содержимое источника должно быть строкой."
@@ -150,15 +137,11 @@ def parse_source(content: str) -> list[Node]:
     nodes: list[Node] = []
 
     for line in _candidate_lines(content):
-        # Некоторые источники могут содержать пробелы
-        # вокруг URI.
         candidate = line.strip()
 
         try:
             node = _parse_uri(candidate)
         except ValueError:
-            # Некорректный порт или URL не должен
-            # останавливать обработку всего источника.
             continue
 
         if node is not None:
@@ -168,8 +151,6 @@ def parse_source(content: str) -> list[Node]:
 
 
 def parse_sources(contents: list[str]) -> list[Node]:
-    """Разбирает несколько источников."""
-
     result: list[Node] = []
 
     for content in contents:

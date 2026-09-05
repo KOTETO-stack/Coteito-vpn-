@@ -1,0 +1,208 @@
+# ============================================================
+# Karing VPN Subscription Builder
+# Основная конфигурация проекта
+# ============================================================
+
+project:
+  name: "Karing VPN Subscription Builder"
+  language: "ru"
+  platform: "ios"
+  client: "karing"
+
+# ------------------------------------------------------------
+# Разрешённые протоколы
+# ------------------------------------------------------------
+
+protocols:
+  allowed:
+    - "hysteria2"
+    - "trojan"
+
+  reject_unknown: true
+
+# ------------------------------------------------------------
+# Сбор источников
+# ------------------------------------------------------------
+
+sources:
+  enabled: true
+
+  # Источники должны быть публичными HTTP/HTTPS-ресурсами.
+  # Личные данные и авторизованные источники не используются.
+  allowed_schemes:
+    - "http"
+    - "https"
+
+  # Telegram и другие мессенджеры не являются источниками.
+  allow_messaging_sources: false
+
+  refresh_interval_hours: 6
+
+  max_sources: 100
+
+# ------------------------------------------------------------
+# Фильтрация серверов
+# ------------------------------------------------------------
+
+nodes:
+  min_count_target: 100
+  preferred_count: 150
+
+  # Максимальная допустимая задержка.
+  max_latency_ms: 500
+
+  # Количество повторных проверок перед исключением узла.
+  validation_attempts: 3
+
+  # Минимальная доля успешных проверок.
+  min_success_ratio: 0.66
+
+  remove_duplicates: true
+
+  exclude_countries:
+    - "Ukraine"
+    - "UA"
+    - "Украина"
+
+# ------------------------------------------------------------
+# Проверка соединения
+# ------------------------------------------------------------
+
+healthcheck:
+  enabled: true
+
+  timeout_seconds: 10
+
+  tls:
+    enabled: true
+    verify_certificate: true
+
+  connectivity:
+    enabled: true
+
+  latency:
+    enabled: true
+
+# ------------------------------------------------------------
+# DNS
+# ------------------------------------------------------------
+
+dns:
+  leak_check:
+    enabled: true
+
+  # Проверяем DNS отдельно от обычной проверки доступности.
+  check_direct_dns: true
+  check_proxy_dns: true
+
+  # Не передавать в тестах пользовательские домены.
+  use_test_domains_only: true
+
+# ------------------------------------------------------------
+# IPv4 / IPv6
+# ------------------------------------------------------------
+
+network:
+  check_ipv4: true
+  check_ipv6: true
+
+  reject_unexpected_route: true
+
+# ------------------------------------------------------------
+# Безопасность тестов
+# ------------------------------------------------------------
+
+privacy:
+  send_personal_data: false
+  send_cookies: false
+  send_authentication_tokens: false
+  collect_user_traffic: false
+  store_user_traffic: false
+
+  # В логах разрешена только техническая информация.
+  technical_logs_only: true
+
+# ------------------------------------------------------------
+# Логирование
+# ------------------------------------------------------------
+
+logging:
+  level: "info"
+
+  store_failed_checks: true
+  store_raw_traffic: false
+  store_request_bodies: false
+
+  # Не записывать секреты и идентификаторы пользователя.
+  redact_secrets: true
+
+# ------------------------------------------------------------
+# Генерация названий
+# ------------------------------------------------------------
+
+naming:
+  language: "ru"
+
+  include_country: true
+  include_city: true
+  include_flag: true
+
+  format: "{country} {city} {flag}"
+
+# ------------------------------------------------------------
+# Генерация подписки
+# ------------------------------------------------------------
+
+subscription:
+  enabled: true
+
+  output_directory: "output"
+
+  formats:
+    - "clash"
+    - "sing-box"
+
+  sort_by:
+    - "latency"
+    - "country"
+    - "city"
+
+  only_validated_nodes: true
+
+# ------------------------------------------------------------
+# Автоматическое обновление
+# ------------------------------------------------------------
+
+update:
+  enabled: true
+
+  interval_hours: 6
+
+  remove_failed_nodes: true
+  revalidate_existing_nodes: true
+  add_new_nodes: true
+
+# ------------------------------------------------------------
+# CI/CD
+# ------------------------------------------------------------
+
+ci:
+  enabled: true
+
+  fail_on_invalid_config: true
+  fail_on_security_check_error: true
+
+  # Секреты должны храниться только в secrets CI/CD.
+  secrets_from_environment: true
+
+# ------------------------------------------------------------
+# Резервные ограничения
+# ------------------------------------------------------------
+
+safety:
+  never_publish_unvalidated_nodes: true
+  never_publish_malformed_nodes: true
+  never_publish_unknown_protocols: true
+
+  # Не обещаем фиксированное количество рабочих серверов.
+  do_not_fill_missing_nodes_with_invalid_entries: true

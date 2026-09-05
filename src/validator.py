@@ -17,20 +17,28 @@ class ValidatorError(Exception):
 
 @dataclass(frozen=True)
 class ValidatorConfig:
-    """Параметры технической проверки."""
+    """Параметры базовой технической проверки."""
 
     timeout_seconds: float = DEFAULT_TIMEOUT
     max_latency_ms: float = 500.0
     verify_tls: bool = True
 
+    def validate(self) -> None:
+        if self.timeout_seconds <= 0:
+            raise ValidatorError(
+                "timeout_seconds должен быть больше нуля."
+            )
 
-def _tcp_check(node: Node, timeout: float) -> float:
-    """
-    Проверяет TCP-доступность адреса и измеряет задержку.
+        if self.max_latency_ms <= 0:
+            raise ValidatorError(
+                "max_latency_ms должен быть больше нуля."
+            )
 
-    Возвращает время подключения в миллисекундах.
-    """
 
+def _tcp_check(
+    node: Node,
+    timeout: float,
+) -> float:
     started = time.perf_counter()
 
     with socket.create_connection(
@@ -39,37 +47,21 @@ def _tcp_check(node: Node, timeout: float) -> float:
     ):
         pass
 
-    elapsed = (time.perf_counter() - started) * 1000
-
-    return elapsed
+    return (time.perf_counter() - started) * 1000
 
 
-def _tls_check(
+def _trojan_tls_check(
     node: Node,
     timeout: float,
     verify_certificate: bool,
 ) -> bool:
-    """
-    Проверяет TLS только для TCP/TLS-соединения.
-
-    Важно: успешный TLS handshake не означает,
-    что Trojan или Hysteria2 успешно авторизовался.
-    """
-
-    if node.protocol == "hysteria2":
-        # Hysteria2 работает поверх QUIC/UDP, поэтому
-        # обычная TCP/TLS-проверка здесь неприменима.
-        return False
-
     if node.protocol != "trojan":
         return False
 
     if verify_certificate:
         context = ssl.create_default_context()
-        server_hostname = node.address
     else:
         context = ssl._create_unverified_context()
-        server_hostname = node.address
 
     raw_socket = socket.create_connection(
         (node.address, node.port),
@@ -79,7 +71,7 @@ def _tls_check(
     try:
         with context.wrap_socket(
             raw_socket,
-            server_hostname=server_hostname,
+            server_hostname=node.address,
         ):
             return True
     finally:
@@ -94,19 +86,45 @@ def validate_node(
     config: ValidatorConfig | None = None,
 ) -> ValidationResult:
     """
-    Выполняет безопасную базовую проверку узла.
+    Выполняет базовую техническую проверку.
 
-    Результат intentionally консервативный:
-    сетевой доступ сам по себе не считается доказательством
-    работоспособности VPN-протокола.
+    TCP-доступность сама по себе не доказывает,
+    что VPN работает.
+
+    TLS handshake не доказывает успешную
+    авторизацию Trojan.
+
+    Hysteria2 требует отдельной проверки QUIC/UDP.
+
+    DNS-проверка выполняется отдельным компонентом.
+    Поэтому здесь DNS всегда остаётся NOT_CHECKED,
+    пока отдельный DNS validator не установит результат.
     """
 
     config = config or ValidatorConfig()
+    config.validate()
 
     errors: list[str] = []
+
     latency_ms: float | None = None
     reachable = False
     tls_valid = False
+
+    if node.protocol not in {
+        "trojan",
+        "hysteria2",
+    }:
+        errors.append(
+            f"Неподдерживаемый протокол: {node.protocol}"
+        )
+
+        return ValidationResult(
+            reachable=False,
+            tls_valid=False,
+            latency_ms=None,
+            dns_leak=None,
+            errors=errors,
+        )
 
     try:
         latency_ms = _tcp_check(
@@ -115,57 +133,54 @@ def validate_node(
         )
         reachable = True
 
-    except (OSError, TimeoutError) as exc:
+    except (
+        OSError,
+        TimeoutError,
+    ) as exc:
         errors.append(
-            f"TCP-проверка не пройдена: {type(exc).__name__}"
+            "TCP-проверка не пройдена: "
+            f"{type(exc).__name__}"
         )
 
-    if reachable and latency_ms is not None:
-        if latency_ms > config.max_latency_ms:
-            errors.append(
-                f"Задержка выше допустимой: "
-                f"{latency_ms:.1f} мс"
-            )
+    if (
+        reachable
+        and latency_ms is not None
+        and latency_ms > config.max_latency_ms
+    ):
+        errors.append(
+            "Задержка выше допустимой: "
+            f"{latency_ms:.1f} мс"
+        )
 
     if reachable and node.protocol == "trojan":
         try:
-            tls_valid = _tls_check(
+            tls_valid = _trojan_tls_check(
                 node,
                 config.timeout_seconds,
                 config.verify_tls,
             )
 
-        except (OSError, ssl.SSLError, TimeoutError) as exc:
+        except (
+            OSError,
+            ssl.SSLError,
+            TimeoutError,
+        ) as exc:
             errors.append(
-                f"TLS-проверка не пройдена: "
+                "TLS-проверка не пройдена: "
                 f"{type(exc).__name__}"
             )
 
     elif node.protocol == "hysteria2":
         errors.append(
-            "Для Hysteria2 требуется отдельный QUIC/UDP "
-            "протокольный валидатор."
+            "Hysteria2 пока требует отдельной "
+            "QUIC/UDP-проверки."
         )
-
-    else:
-        errors.append(
-            f"Неподдерживаемый протокол: {node.protocol}"
-        )
-
-    # DNS leak здесь намеренно НЕ объявляется отсутствующим.
-    # Для этого потребуется отдельная проверка маршрутизации
-    # через реально установленный VPN-туннель.
-    dns_leak = None
-
-    # Пока полноценный протокольный handshake не реализован,
-    # узел не считается готовым к публикации.
-    validated = False
 
     return ValidationResult(
         reachable=reachable,
         tls_valid=tls_valid,
         latency_ms=latency_ms,
-        dns_leak=dns_leak,
+        dns_leak=None,
         errors=errors,
     )
 
@@ -174,10 +189,6 @@ def apply_validation_result(
     node: Node,
     result: ValidationResult,
 ) -> Node:
-    """
-    Записывает результат проверки в модель Node.
-    """
-
     node.reachable = result.reachable
     node.tls_valid = result.tls_valid
     node.latency_ms = result.latency_ms

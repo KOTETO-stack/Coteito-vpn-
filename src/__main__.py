@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from config_loader import ConfigError, load_config
+from .config_loader import ConfigError, load_config
 
 
 def main() -> int:
